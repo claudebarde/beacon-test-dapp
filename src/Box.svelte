@@ -3,6 +3,7 @@
   import { fly } from "svelte/transition";
   import type { TestResult } from "./types";
   import LinkIcon from "./LinkIcon.svelte";
+  import store from "./store";
 
   export let test, index, network;
 
@@ -47,6 +48,11 @@
               result.output
             ]
           });
+        } else if (test.id === "confirmation-observable") {
+          dispatch("open-modal", {
+            title: "Confirmations through observable",
+            body: result.output
+          });
         }
       } else {
         throw "Error";
@@ -84,9 +90,17 @@
   #tx-limits {
     display: flex;
 
-    input {
+    label {
       width: 30%;
       margin: 0px 10px;
+      display: flex;
+      flex-direction: column;
+      font-size: 0.7rem;
+
+      input {
+        width: 90%;
+        font-size: 0.9rem;
+      }
     }
   }
 </style>
@@ -124,17 +138,36 @@
   {/if}
   {#if test.inputRequired && test.inputType === "set-limits"}
     <div id="tx-limits">
-      <input type="number" placeholder="Fee" bind:value={input.fee} />
-      <input
-        type="number"
-        placeholder="Storage Limit"
-        bind:value={input.storageLimit}
-      />
-      <input
-        type="number"
-        placeholder="Gas Limit"
-        bind:value={input.gasLimit}
-      />
+      <label>
+        <span>Fee:</span>
+        <input type="number" placeholder="Fee" bind:value={input.fee} />
+      </label>
+      <label>
+        <span>Storage limit:</span>
+        <input
+          type="number"
+          placeholder="Storage Limit"
+          bind:value={input.storageLimit}
+        /></label
+      >
+      <label>
+        <span>Gas limit:</span>
+        <input
+          type="number"
+          placeholder="Gas Limit"
+          bind:value={input.gasLimit}
+        /></label
+      >
+    </div>
+  {/if}
+  {#if test.id === "confirmation-observable" && $store.confirmationObservableTest}
+    <div>
+      {$store.confirmationObservableTest.length} confirmation{$store
+        .confirmationObservableTest.length > 1
+        ? "s"
+        : ""} (level {$store.confirmationObservableTest[
+        $store.confirmationObservableTest.length - 1
+      ].level})
     </div>
   {/if}
   {#if executionTime && test.showExecutionTime}
@@ -166,8 +199,8 @@
         on:click={() =>
           (input = {
             text: "",
-            storageLimit: "20",
-            gasLimit: "4000",
+            storageLimit: "200",
+            gasLimit: "8000",
             fee: "800"
           })}>Default</button
       >

@@ -10,6 +10,7 @@ import { BeaconWallet } from "@taquito/beacon-wallet";
 import { char2Bytes } from "@taquito/utils";
 import { RequestSignPayloadInput, SigningType } from "@airgap/beacon-sdk";
 import { TestSettings, TestResult } from "./types";
+import store from "./store";
 
 const sendTez = async (Tezos: TezosToolkit): Promise<TestResult> => {
   let opHash = "";
@@ -82,7 +83,7 @@ const callFail = async (
   }
 };
 
-const callFaiWithInt = async (
+const callFailWithInt = async (
   contract: ContractAbstraction<Wallet> | ContractAbstraction<ContractProvider>
 ): Promise<TestResult> => {
   let opHash = "";
@@ -108,7 +109,7 @@ const callFaiWithInt = async (
   }
 };
 
-const callFaiWithPair = async (
+const callFailWithPair = async (
   contract: ContractAbstraction<Wallet> | ContractAbstraction<ContractProvider>
 ): Promise<TestResult> => {
   let opHash = "";
@@ -116,7 +117,7 @@ const callFaiWithPair = async (
     const op = await contract.methods.fail_with_pair([["unit"]]).send();
     opHash = op.hasOwnProperty("opHash") ? op["opHash"] : op["hash"];
     await op.confirmation();
-    return { success: false, opHash: "" };
+    return { success: false, opHash: ""};
   } catch (error) {
     console.log(error);
     if (
@@ -326,6 +327,37 @@ const setTransactionLimits = async (
   }
 };
 
+const tryConfirmationObservable = async (
+  Tezos: TezosToolkit
+): Promise<TestResult> => {
+  let opHash = "";
+  try {
+    const op = await Tezos.wallet
+      .transfer({ to: "tz1VSUr8wwNhLAzempoch5d6hLRiTh8Cjcjb", amount: 1 })
+      .send();
+
+    const events = await new Promise((resolve, reject) => {
+      const evts: any[] = [];
+      op.confirmationObservable(3).subscribe(
+        event => {
+          console.log(event);
+          store.updateConfirmationObservableTest({
+            level: event.block.header.level
+          });
+          evts.push(event);
+        },
+        reject,
+        () => resolve(evts)
+      );
+    });
+
+    return { success: true, opHash, output: JSON.stringify(events) };
+  } catch (error) {
+    console.log(error);
+    return { success: false, opHash: "" };
+  }
+};
+
 export default (
   Tezos: TezosToolkit,
   contract: ContractAbstraction<Wallet> | ContractAbstraction<ContractProvider>,
@@ -334,7 +366,7 @@ export default (
   {
     id: "send-tez",
     name: "Send tez",
-    description: "This test sends 1 tez to Alice's address",
+    description: "This test sends 1 tez to Alice's address (tz1VSUr8wwNhLAzempoch5d6hLRiTh8Cjcjb)",
     run: () => sendTez(Tezos),
     showExecutionTime: false,
     inputRequired: false
@@ -342,7 +374,7 @@ export default (
   {
     id: "contract-call-simple-type",
     name: "Contract call with int",
-    description: "This test calls a contract entrypoint and passes an int",
+    description: "This test calls a contract entrypoint named simple_param and passes an int value of `5`",
     run: () => sendInt(contract),
     showExecutionTime: false,
     inputRequired: false
@@ -351,7 +383,7 @@ export default (
     id: "contract-call-complex-type",
     name: "Contract call with (pair nat string)",
     description:
-      "This test calls a contract entrypoint and passes a pair holding a nat and a string",
+      "This test calls a contract entrypoint named complex_param and passes a pair (5, `Taquito`) holding a nat and a string",
     run: () => sendComplexParam(contract),
     showExecutionTime: false,
     inputRequired: false
@@ -360,7 +392,7 @@ export default (
     id: "contract-call-fail",
     name: "Contract call that fails",
     description:
-      'This test calls a contract entrypoint that fails with the message "Fail entrypoint"',
+      'This test calls a contract entrypoint named fail that fails with the message "Fail entrypoint"',
     run: () => callFail(contract),
     showExecutionTime: false,
     inputRequired: false
@@ -368,16 +400,16 @@ export default (
   {
     id: "contract-call-fail-with-int",
     name: "Contract call that fails with int",
-    description: "This test calls a contract entrypoint that fails with an int",
-    run: () => callFaiWithInt(contract),
+    description: "This test calls a contract entrypoint named fail_with_int",
+    run: () => callFailWithInt(contract),
     showExecutionTime: false,
     inputRequired: false
   },
   {
     id: "contract-call-fail-with-pair",
     name: "Contract call that fails with (pair int string)",
-    description: "This test calls a contract entrypoint that fails with a pair",
-    run: () => callFaiWithPair(contract),
+    description: "This test calls a contract entrypoint named fail_with_pair",
+    run: () => callFailWithPair(contract),
     showExecutionTime: false,
     inputRequired: false
   },
@@ -392,7 +424,7 @@ export default (
   {
     id: "batch-api",
     name: "Use the Batch API with a wallet",
-    description: "This test sends 0.3 tez to 3 different addresses",
+    description: "This test sends 0.3 tez to 3 different addresses: tz1ZfrERcALBwmAqwonRXYVQBDT9BjNjBHJu, tz1VSUr8wwNhLAzempoch5d6hLRiTh8Cjcjb, and tz1aSkwEot3L2kmUvcoxzjMomb9mvBNuzFK6",
     run: () => batchApiTest(Tezos),
     showExecutionTime: false,
     inputRequired: false
@@ -444,6 +476,15 @@ export default (
     showExecutionTime: false,
     inputRequired: true,
     inputType: "set-limits"
+  },
+  {
+    id: "confirmation-observable",
+    name: "Subscribe to confirmations",
+    description:
+      "This test sends 1 tez to Alice and subscribes to 3 confirmations",
+    run: () => tryConfirmationObservable(Tezos),
+    showExecutionTime: false,
+    inputRequired: false
   }
   /*{
       id: "originate-fail",
