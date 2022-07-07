@@ -3,6 +3,7 @@
   import { fly } from "svelte/transition";
   import type { TestResult } from "./types";
   import LinkIcon from "./LinkIcon.svelte";
+  import store from "./store";
 
   export let test, index, network;
 
@@ -24,12 +25,14 @@
       if (
         test.id === "sign-payload" ||
         test.id === "sign-payload-and-send" ||
+        test.id === "verify-signature" ||
         test.id === "set-transaction-limits"
       ) {
         result = await test.run(input);
       } else {
         result = await test.run();
       }
+      console.log(result);
       if (result && result.success === true) {
         const t2 = performance.now();
         executionTime = t2 - t1;
@@ -37,8 +40,13 @@
         successOp = true;
         opHash = result.opHash;
         // special output for sign-payload
-        if (test.id === "sign-payload" || test.id === "sign-payload-and-send") {
+        if (
+          test.id === "sign-payload" ||
+          test.id === "sign-payload-and-send" ||
+          test.id === "verify-signature"
+        ) {
           dispatch("open-modal", {
+            id: test.id,
             title: "Signing Result",
             body: [
               result.sigDetails.input,
@@ -46,6 +54,12 @@
               result.sigDetails.bytes,
               result.output
             ]
+          });
+        } else if (test.id === "confirmation-observable") {
+          dispatch("open-modal", {
+            id: test.id,
+            title: "Confirmations through observable",
+            body: result.confirmationObsOutput
           });
         }
       } else {
@@ -68,7 +82,9 @@
   }
 
   #test-execution {
-    text-align: right;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
   }
 
   .link-icon {
@@ -84,9 +100,17 @@
   #tx-limits {
     display: flex;
 
-    input {
+    label {
       width: 30%;
       margin: 0px 10px;
+      display: flex;
+      flex-direction: column;
+      font-size: 0.7rem;
+
+      input {
+        width: 90%;
+        font-size: 0.9rem;
+      }
     }
   }
 </style>
@@ -124,17 +148,39 @@
   {/if}
   {#if test.inputRequired && test.inputType === "set-limits"}
     <div id="tx-limits">
-      <input type="number" placeholder="Fee" bind:value={input.fee} />
-      <input
-        type="number"
-        placeholder="Storage Limit"
-        bind:value={input.storageLimit}
-      />
-      <input
-        type="number"
-        placeholder="Gas Limit"
-        bind:value={input.gasLimit}
-      />
+      <label>
+        <span>Fee:</span>
+        <input type="number" placeholder="Fee" bind:value={input.fee} />
+      </label>
+      <label>
+        <span>Storage limit:</span>
+        <input
+          type="number"
+          placeholder="Storage Limit"
+          bind:value={input.storageLimit}
+        /></label
+      >
+      <label>
+        <span>Gas limit:</span>
+        <input
+          type="number"
+          placeholder="Gas Limit"
+          bind:value={input.gasLimit}
+        /></label
+      >
+    </div>
+  {/if}
+  {#if test.id === "confirmation-observable" && $store.confirmationObservableTest}
+    <div>
+      {$store.confirmationObservableTest[
+        $store.confirmationObservableTest.length - 1
+      ].currentConfirmation} confirmation{$store.confirmationObservableTest[
+        $store.confirmationObservableTest.length - 1
+      ].currentConfirmation > 1
+        ? "s"
+        : ""} (level {$store.confirmationObservableTest[
+        $store.confirmationObservableTest.length - 1
+      ].level})
     </div>
   {/if}
   {#if executionTime && test.showExecutionTime}
@@ -166,11 +212,17 @@
         on:click={() =>
           (input = {
             text: "",
-            storageLimit: "20",
-            gasLimit: "4000",
-            fee: "800"
+            storageLimit: "0",
+            gasLimit: "1320",
+            fee: "441"
           })}>Default</button
       >
+    {/if}
+    <!-- BROKEN FEATURE UNDER TESTING -->
+    {#if test.id === "permit"}
+      <span style="font-size:0.8rem;color:red">(Broken, under testing)</span>
+    {:else}
+      <span />
     {/if}
     <button
       class={`button blue ${loading ? "loading" : ""}`}
