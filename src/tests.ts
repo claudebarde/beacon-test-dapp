@@ -7,9 +7,33 @@ import {
   ContractProvider
 } from "@taquito/taquito";
 import { BeaconWallet } from "@taquito/beacon-wallet";
-import { char2Bytes } from "@taquito/utils";
+import { char2Bytes, verifySignature } from "@taquito/utils";
 import { RequestSignPayloadInput, SigningType } from "@airgap/beacon-sdk";
+import { get } from "svelte/store";
 import { TestSettings, TestResult } from "./types";
+import store from "./store";
+import contractToOriginate from "./contractToOriginate";
+import localStore from "./store";
+
+const preparePayloadToSign = (
+  input: string,
+  userAddress: string
+): {
+  payload: RequestSignPayloadInput;
+  formattedInput: string;
+} => {
+  const formattedInput = `Tezos Signed Message: beacon-test-dapp.netlify.app/ ${new Date().toISOString()} ${input}`;
+  const bytes = char2Bytes(formattedInput);
+  const payload: RequestSignPayloadInput = {
+    signingType: SigningType.MICHELINE,
+    payload: "05" + "0100" + char2Bytes(bytes.length.toString()) + bytes,
+    sourceAddress: userAddress
+  };
+  return {
+    payload,
+    formattedInput
+  };
+};
 
 const sendTez = async (Tezos: TezosToolkit): Promise<TestResult> => {
   let opHash = "";
@@ -46,7 +70,10 @@ const sendComplexParam = async (
 ): Promise<TestResult> => {
   let opHash = "";
   try {
-    const op = await contract.methods.complex_param(5, "Taquito").send();
+    // const op = await contract.methods.complex_param(5, "Taquito").send();
+    const op = await contract.methodsObject
+      .complex_param({ 0: 5, 1: "Taquito" })
+      .send();
     opHash = op.hasOwnProperty("opHash") ? op["opHash"] : op["hash"];
     await op.confirmation();
     return { success: true, opHash };
@@ -145,11 +172,10 @@ const originateSuccess = async (Tezos: TezosToolkit): Promise<TestResult> => {
   let opHash = "";
   try {
     // fetches contract code
-    // https://better-call.dev/florencenet/KT1RH3gjrnrarQ4qMgxotUxLocX8TM3Fconm/operations
-    const code = (await Tezos.wallet.at("KT1RH3gjrnrarQ4qMgxotUxLocX8TM3Fconm"))
-      .script.code;
     const storage = new MichelsonMap();
-    const op = await Tezos.wallet.originate({ code, storage }).send();
+    const op = await Tezos.wallet
+      .originate({ code: contractToOriginate, storage })
+      .send();
     opHash = op.opHash;
     await op.confirmation();
     return { success: true, opHash };
@@ -244,22 +270,17 @@ const signPayload = async (
   wallet: BeaconWallet
 ): Promise<TestResult> => {
   const userAddress = await wallet.getPKH();
-  const formattedInput = `Tezos Signed Message: beacon-test-dapp.netlify.app/ ${new Date().toISOString()} ${input}`;
-  const bytes = "05" + char2Bytes(formattedInput);
-  const payload: RequestSignPayloadInput = {
-    signingType: SigningType.MICHELINE,
-    payload: bytes,
-    sourceAddress: userAddress
-  };
+  const { payload, formattedInput } = preparePayloadToSign(input, userAddress);
   try {
     const signedPayload = await wallet.client.requestSignPayload(payload);
     return {
       success: true,
       opHash: "",
       output: signedPayload.signature,
-      sigDetails: { input, formattedInput, bytes }
+      sigDetails: { input, formattedInput, bytes: payload.payload }
     };
   } catch (error) {
+    console.log(error);
     return { success: false, opHash: "", output: JSON.stringify(error) };
   }
 };
@@ -272,13 +293,7 @@ const signPayloadAndSend = async (
   if (!input) throw "No input provided";
 
   const userAddress = await wallet.getPKH();
-  const formattedInput = `Tezos Signed Message: beacon-test-dapp.netlify.app/ ${new Date().toISOString()} ${input}`;
-  const bytes = "05" + char2Bytes(formattedInput);
-  const payload: RequestSignPayloadInput = {
-    signingType: SigningType.MICHELINE,
-    payload: bytes,
-    sourceAddress: userAddress
-  };
+  const { payload, formattedInput } = preparePayloadToSign(input, userAddress);
   try {
     const signedPayload = await wallet.client.requestSignPayload(payload);
     // gets user's public key
@@ -286,15 +301,50 @@ const signPayloadAndSend = async (
     const publicKey = activeAccount.publicKey;
     // sends transaction to contract
     const op = await contract.methods
-      .check_signature(publicKey, signedPayload.signature, bytes)
+      .check_signature(publicKey, signedPayload.signature, payload.payload)
       .send();
     await op.confirmation();
     return {
       success: true,
       opHash: op.hasOwnProperty("opHash") ? op["opHash"] : op["hash"],
       output: signedPayload.signature,
-      sigDetails: { input, formattedInput, bytes }
+      sigDetails: { input, formattedInput, bytes: payload.payload }
     };
+  } catch (error) {
+    return { success: false, opHash: "", output: JSON.stringify(error) };
+  }
+};
+
+const verifySignatureWithTaquito = async (
+  input: string,
+  wallet: BeaconWallet,
+  contract: ContractAbstraction<Wallet> | ContractAbstraction<ContractProvider>
+): Promise<TestResult> => {
+  if (!input) throw "No input provided";
+
+  const userAddress = await wallet.getPKH();
+  const { payload, formattedInput } = preparePayloadToSign(input, userAddress);
+  try {
+    const signedPayload = await wallet.client.requestSignPayload(payload);
+    // gets user's public key
+    const activeAccount = await wallet.client.getActiveAccount();
+    const publicKey = activeAccount.publicKey;
+    // verifies signature
+    const isSignatureCorrect = verifySignature(
+      payload.payload,
+      publicKey,
+      signedPayload.signature
+    );
+    if (isSignatureCorrect) {
+      return {
+        success: true,
+        opHash: "",
+        output: signedPayload.signature,
+        sigDetails: { input, formattedInput, bytes: payload.payload }
+      };
+    } else {
+      throw "Forged signature is incorrect";
+    }
   } catch (error) {
     return { success: false, opHash: "", output: JSON.stringify(error) };
   }
@@ -308,22 +358,162 @@ const setTransactionLimits = async (
 ): Promise<TestResult> => {
   let opHash = "";
   try {
+    let op;
     if (isNaN(+fee) || isNaN(+storageLimit) || isNaN(+gasLimit)) {
-      throw "One of the parameters is not a number";
+      // if one of the parameters is missing, transaction is sent as is
+      op = await contract.methods.simple_param(5).send();
+    } else {
+      op = await contract.methods.simple_param(5).send({
+        storageLimit: +storageLimit,
+        gasLimit: +gasLimit,
+        fee: +fee
+      });
     }
 
-    const op = await contract.methods.simple_param(5).send({
-      storageLimit: +storageLimit,
-      gasLimit: +gasLimit,
-      fee: +fee
-    });
     opHash = op.hasOwnProperty("opHash") ? op["opHash"] : op["hash"];
     await op.confirmation();
+    console.log("Operation successful with op hash:", opHash);
     return { success: true, opHash };
   } catch (error) {
     console.log(error);
     return { success: false, opHash: "" };
   }
+};
+
+const tryConfirmationObservable = async (
+  contract: ContractAbstraction<Wallet>
+): Promise<TestResult> => {
+  let opHash = "";
+  try {
+    /*const op = await Tezos.wallet
+      .transfer({ to: "tz1VSUr8wwNhLAzempoch5d6hLRiTh8Cjcjb", amount: 1 })
+      .send();*/
+    store.resetConfirmationObservableTest();
+
+    const storage: any = await contract.storage();
+    const val = storage.simple.toNumber() + 1;
+    const op = await contract.methods.simple_param(val).send();
+
+    const entries = await new Promise((resolve, reject) => {
+      const evts: any[] = [];
+      op.confirmationObservable(3).subscribe(
+        event => {
+          console.log(event);
+          const entry = {
+            level: event.block.header.level,
+            currentConfirmation: event.currentConfirmation
+          };
+          store.updateConfirmationObservableTest(entry);
+          evts.push(entry);
+        },
+        () => reject(null),
+        () => resolve(evts)
+      );
+    });
+
+    console.log({ entries });
+
+    return { success: true, opHash, confirmationObsOutput: entries as any };
+  } catch (error) {
+    console.log(error);
+    return { success: false, opHash: "" };
+  }
+};
+
+const permit = async (Tezos: TezosToolkit, wallet: BeaconWallet) => {
+  const store = get(localStore);
+
+  const expectedBytes =
+    "05070707070a00000004f5f466ab0a0000001601c6ac120153e9a6f3daa3ecdfbf0bb13f529f832500070700000a0000002105a6a36a686b864c75b0cf59816d24c8649f6f6fb0ea10c4beaed8988d1d55edef";
+
+  try {
+    const contractAddress = "KT1ShFVQPoLvekQu21pvuJst7cG1TjtnzdvW";
+    const contract = await Tezos.wallet.at(contractAddress);
+    // hashes the parameter for the contract call
+    const mintParam: any = contract.methods
+      .mint(store.userAddress, 100)
+      .toTransferParams().parameter?.value;
+    const mintParamType = contract.entrypoints.entrypoints["mint"];
+    // packs the entrypoint call
+    const rawPacked = await Tezos.rpc.packData({
+      data: mintParam,
+      type: mintParamType
+    });
+    const packedParam = rawPacked.packed;
+    const paramHash = packedParam;
+    /*"05" +
+      buf2hex(blake.blake2b(hex2buf(packedParam), null, 32).buffer as Buffer);*/
+    // hashes the parameter for the signature
+    const chainId = await Tezos.rpc.getChainId();
+    const contractStorage: any = await contract.storage();
+    const counter = contractStorage.counter;
+    const sigParamData: any = {
+      prim: "Pair",
+      args: [
+        {
+          prim: "Pair",
+          args: [
+            {
+              string: chainId
+            },
+            {
+              string: contractAddress
+            }
+          ]
+        },
+        {
+          prim: "Pair",
+          args: [
+            {
+              int: counter
+            },
+            {
+              string: paramHash
+            }
+          ]
+        }
+      ]
+    };
+    const sigParamType = {
+      prim: "pair",
+      args: [
+        {
+          prim: "pair",
+          args: [
+            {
+              prim: "chain_id"
+            },
+            { prim: "address" }
+          ]
+        },
+        {
+          prim: "pair",
+          args: [{ prim: "nat" }, { prim: "string" }]
+        }
+      ]
+    };
+    const sigParamPacked = await Tezos.rpc.packData({
+      data: sigParamData,
+      type: sigParamType
+    });
+    console.log(sigParamPacked.packed, paramHash);
+    // signs the hash
+    /*const sig = await wallet.client.requestSignPayload({
+      signingType: SigningType.MICHELINE,
+      payload: paramHash,
+      sourceAddress: store.userAddress
+    });
+    const { publicKey } = await wallet.client.getActiveAccount();
+    const permitMethodOp = await contract.methods
+      .permit([{ 0: publicKey, 1: sig.signature, 2: paramHash }])
+      .send();
+    await permitMethodOp.confirmation();
+    console.log(permitMethodOp.opHash);*/
+  } catch (error) {
+    console.error(error);
+  }
+
+  return { success: false, opHash: "" };
 };
 
 export default (
@@ -430,6 +620,16 @@ export default (
     inputType: "string"
   },
   {
+    id: "verify-signature",
+    name: "Verify a provided signature",
+    description:
+      "This test signs the provided payload and uses Taquito to verify the signature",
+    run: input => verifySignatureWithTaquito(input.text, wallet, contract),
+    showExecutionTime: false,
+    inputRequired: true,
+    inputType: "string"
+  },
+  {
     id: "set-transaction-limits",
     name: "Set the transaction limits",
     description:
@@ -444,6 +644,24 @@ export default (
     showExecutionTime: false,
     inputRequired: true,
     inputType: "set-limits"
+  },
+  {
+    id: "confirmation-observable",
+    name: "Subscribe to confirmations",
+    description:
+      "This test updates the underlying contract and subscribes to 3 confirmations",
+    run: () =>
+      tryConfirmationObservable(contract as ContractAbstraction<Wallet>),
+    showExecutionTime: false,
+    inputRequired: false
+  },
+  {
+    id: "permit",
+    name: "Permit contract",
+    description: "This test implements TZIP-17",
+    run: () => permit(Tezos, wallet),
+    showExecutionTime: false,
+    inputRequired: false
   }
   /*{
       id: "originate-fail",
